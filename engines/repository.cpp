@@ -170,3 +170,83 @@ std::vector<FileVersion> Repository::getFileHistory(const std::string& fileName)
 
     return fileVersions[fileName];
 }
+
+void Repository::deleteFile(const std::string& fileName, const std::string& branch) {
+    std::lock_guard<std::mutex> lock(repoMutex);
+
+    // Проверяем, существует ли файл в указанной ветке
+    if (branches.find(branch) == branches.end() || branches[branch].find(fileName) == branches[branch].end()) {
+        throw std::runtime_error("File or branch does not exist.");
+    }
+
+    // Создаем новую версию файла с отметкой "удален"
+    FileVersion deletedVersion;
+    deletedVersion.hash = computeHash({}); // Хеш пустого содержимого
+    deletedVersion.parentHash = getCurrentVersionHash(fileName, branch);
+    deletedVersion.timestamp = std::chrono::system_clock::now();
+    deletedVersion.author = "System";
+    deletedVersion.message = "File marked as deleted.";
+    deletedVersion.isDelta = false;
+
+    // Добавляем версию в историю файла
+    fileVersions[fileName].push_back(deletedVersion);
+
+    // Обновляем ветку, указывая на новую версию
+    branches[branch][fileName] = deletedVersion.hash;
+
+    std::cout << "File '" << fileName << "' marked as deleted in branch '" << branch << "'." << std::endl;
+}
+
+void Repository::deleteBranch(const std::string& branchName) {
+    std::lock_guard<std::mutex> lock(repoMutex);
+
+    // Проверяем, существует ли ветка
+    if (branches.find(branchName) == branches.end()) {
+        throw std::runtime_error("Branch does not exist.");
+    }
+
+    // Помечаем ветку как удаленную
+    branches.erase(branchName);
+
+    std::cout << "Branch '" << branchName << "' has been deleted." << std::endl;
+}
+
+void Repository::restoreFile(const std::string& fileName, const std::string& branch) {
+    std::lock_guard<std::mutex> lock(repoMutex);
+
+    // Проверяем, существует ли файл в указанной ветке
+    if (branches.find(branch) == branches.end() || branches[branch].find(fileName) == branches[branch].end()) {
+        throw std::runtime_error("File or branch does not exist.");
+    }
+
+    // Находим последнюю версию файла
+    const auto& versions = fileVersions[fileName];
+    if (versions.empty()) {
+        throw std::runtime_error("No versions available for the file.");
+    }
+
+    const auto& lastVersion = versions.back();
+
+    // Если файл уже не удален, ничего делать не нужно
+    if (!lastVersion.isDeleted) {
+        throw std::runtime_error("File is not marked as deleted.");
+    }
+
+    // Создаем новую версию файла с отметкой "восстановлен"
+    FileVersion restoredVersion;
+    restoredVersion.hash = lastVersion.parentHash; // Восстанавливаем предыдущую версию
+    restoredVersion.parentHash = lastVersion.hash;
+    restoredVersion.timestamp = std::chrono::system_clock::now();
+    restoredVersion.author = "System";
+    restoredVersion.message = "File restored.";
+    restoredVersion.isDelta = false;
+    restoredVersion.isDeleted = false;
+
+    // Добавляем версию в историю файла
+    fileVersions[fileName].push_back(restoredVersion);
+
+    // Обновляем ветку, указывая на новую версию
+    branches[branch][fileName] = restoredVersion.hash;
+
+    std::cout << "File '" << fileName << "' has been restored in branch '" << branch << "'." << std::endl;
+}

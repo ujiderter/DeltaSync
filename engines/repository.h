@@ -51,6 +51,12 @@ public:
 
     // Получение истории версий файла
     std::vector<FileVersion> getFileHistory(const std::string& fileName);
+
+    void deleteFile(const std::string& fileName, const std::string& branch);
+
+    void deleteBranch(const std::string& branchName);
+
+    void restoreFile(const std::string& fileName, const std::string& branch);
 };
 
 #endif //DELTASYNC_REPOSITORY_H
