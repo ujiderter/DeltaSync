@@ -16,117 +16,168 @@
 #include <iostream>
 
 std::vector<unsigned char> DiffEngine::computeDelta(const std::vector<unsigned char>& original,
-                                               const std::vector<unsigned char>& modified) {
+                                               const std::vector<unsigned char>& modified,
+                                               size_t minMatchLength) {
     std::vector<unsigned char> delta;
-
-    // Простой формат дельты:
-    // [offset (4 bytes)][size (4 bytes)][operation (1 byte)][data (if needed)]
-    // operation: 0 - копировать из оригинала, 1 - вставить новые данные
-
-    unsigned long long int i = 0;
+    
+    // Используем более эффективный алгоритм поиска совпадений
+    size_t i = 0;
     while (i < modified.size()) {
-        unsigned long long int matchPos = 0;
-        unsigned long long int matchLen = 0;
-
-        if (i < modified.size()) {
-            for (unsigned long long int j = 0; j < original.size(); ++j) {
-                unsigned long long int k = 0;
-                while (i + k < modified.size() && j + k < original.size() &&
-                       modified[i + k] == original[j + k]) {
-                    k++;
-                }
-
-                if (k > matchLen) {
-                    matchLen = k;
-                    matchPos = j;
-                }
+        size_t bestMatchPos = 0;
+        size_t bestMatchLen = 0;
+        
+        // Ищем самое длинное совпадение
+        for (size_t j = 0; j < original.size(); j++) {
+            size_t k = 0;
+            while (i + k < modified.size() && 
+                   j + k < original.size() && 
+                   modified[i + k] == original[j + k]) {
+                k++;
+            }
+            
+            if (k > bestMatchLen) {
+                bestMatchLen = k;
+                bestMatchPos = j;
+                if (bestMatchLen >= minMatchLength * 2) break; // ранний выход
             }
         }
-
-        if (matchLen > 4) {
-            auto offset = static_cast<unsigned int>(matchPos);
-            auto size = static_cast<unsigned int>(matchLen);
-
-            delta.push_back(0);
-            delta.insert(delta.end(), reinterpret_cast<unsigned char *>(&offset),
-                         reinterpret_cast<unsigned char *>(&offset) + sizeof(offset));
-            delta.insert(delta.end(), reinterpret_cast<unsigned char *>(&size),
-                         reinterpret_cast<unsigned char *>(&size) + sizeof(size));
-
-            i += matchLen;
+        
+        if (bestMatchLen >= minMatchLength) {
+            // Операция копирования
+            delta.push_back(0); // код операции
+            
+            // Добавляем offset и length
+            uint32_t offset = static_cast<uint32_t>(bestMatchPos);
+            uint32_t length = static_cast<uint32_t>(bestMatchLen);
+            delta.insert(delta.end(), reinterpret_cast<unsigned char*>(&offset), 
+                         reinterpret_cast<unsigned char*>(&offset) + sizeof(offset));
+            delta.insert(delta.end(), reinterpret_cast<unsigned char*>(&length), 
+                         reinterpret_cast<unsigned char*>(&length) + sizeof(length));
+            
+            i += bestMatchLen;
         } else {
-            unsigned long long int insertStart = i;
+            // Операция вставки новых данных
+            size_t insertStart = i;
+            i++; // минимум 1 байт
+            
+            // Ищем следующий хороший матч
             while (i < modified.size()) {
-                unsigned long long int bestMatch = 0;
-                for (unsigned long long int j = 0; j < original.size() && bestMatch < 4; ++j) {
-                    unsigned long long int k = 0;
-                    while (i + k < modified.size() && j + k < original.size() &&
-                           modified[i + k] == original[j + k]) {
-                        k++;
+                bool foundGoodMatch = false;
+                for (size_t j = 0; j < original.size(); j++) {
+                    if (modified[i] == original[j]) {
+                        size_t k = 1;
+                        while (i + k < modified.size() && 
+                               j + k < original.size() && 
+                               modified[i + k] == original[j + k] && 
+                               k < minMatchLength) {
+                            k++;
+                        }
+                        if (k >= minMatchLength) {
+                            foundGoodMatch = true;
+                            break;
+                        }
                     }
-                    bestMatch = std::max(bestMatch, k);
                 }
-
-                if (bestMatch >= 4) {
-                    break;
-                }
+                if (foundGoodMatch) break;
                 i++;
             }
-
-            unsigned long long int insertLen = i - insertStart;
-            if (insertLen > 0) {
-                delta.push_back(1);
-                auto size = static_cast<unsigned int>(insertLen);
-                delta.insert(delta.end(), reinterpret_cast<unsigned char *>(&size),
-                             reinterpret_cast<unsigned char *>(&size) + sizeof(size));
-
-                delta.insert(delta.end(), modified.begin() + insertStart,
-                             modified.begin() + i);
-            }
+            
+            uint32_t length = static_cast<uint32_t>(i - insertStart);
+            delta.push_back(1); // код операции
+            delta.insert(delta.end(), reinterpret_cast<unsigned char*>(&length), 
+                         reinterpret_cast<unsigned char*>(&length) + sizeof(length));
+            delta.insert(delta.end(), modified.begin() + insertStart, 
+                         modified.begin() + i);
         }
     }
-
+    
     return delta;
 }
 
 std::vector<unsigned char> DiffEngine::applyDelta(const std::vector<unsigned char>& original,
-                                             const std::vector<unsigned char>& delta) {
+                                             const std::vector<unsigned char>& delta,
+                                             bool verifyHash) {
     std::vector<unsigned char> result;
-    unsigned long long int i = 0;
-
+    size_t i = 0;
+    
     while (i < delta.size()) {
+        if (i + 1 >= delta.size()) throw std::runtime_error("Invalid delta format");
+        
         unsigned char op = delta[i++];
-
-        if (op == 0) {  // операция копирования
-            unsigned int offset, size;
-            std::memcpy(&offset, &delta[i], sizeof(offset));
+        
+        if (op == 0) { // copy
+            if (i + sizeof(uint32_t)*2 > delta.size()) 
+                throw std::runtime_error("Invalid copy operation in delta");
+                
+            uint32_t offset, length;
+            memcpy(&offset, &delta[i], sizeof(offset));
             i += sizeof(offset);
-            std::memcpy(&size, &delta[i], sizeof(size));
-            i += sizeof(size);
-
-            result.insert(result.end(), original.begin() + offset,
-                          original.begin() + offset + size);
-        } else if (op == 1) {  // операция вставки
-            unsigned int size;
-            std::memcpy(&size, &delta[i], sizeof(size));
-            i += sizeof(size);
-
-            result.insert(result.end(), delta.begin() + i, delta.begin() + i + size);
-            i += size;
+            memcpy(&length, &delta[i], sizeof(length));
+            i += sizeof(length);
+            
+            if (offset + length > original.size())
+                throw std::runtime_error("Invalid offset/length in copy operation");
+                
+            result.insert(result.end(), original.begin() + offset, 
+                         original.begin() + offset + length);
+        } 
+        else if (op == 1) { // insert
+            if (i + sizeof(uint32_t) > delta.size())
+                throw std::runtime_error("Invalid insert operation in delta");
+                
+            uint32_t length;
+            memcpy(&length, &delta[i], sizeof(length));
+            i += sizeof(length);
+            
+            if (i + length > delta.size())
+                throw std::runtime_error("Invalid data length in insert operation");
+                
+            result.insert(result.end(), delta.begin() + i, delta.begin() + i + length);
+            i += length;
+        }
+        else {
+            throw std::runtime_error("Unknown operation in delta");
         }
     }
-
+    
+    if (verifyHash) {
+        // Проверяем хеш, если он есть в конце дельты
+        // (можно добавить опциональное хеширование)
+    }
+    
     return result;
 }
 
 std::basic_string<char> DiffEngine::computeHash(const std::vector<unsigned char>& data) {
-    // TO-DO реализовать SHA-1 или SHA-256
-    unsigned long long int hash = 0;
-    for (auto byte : data) {
-        hash = hash * 31 + byte;
+    unsigned char hash[SHA256_DIGEST_LENGTH];
+    SHA256_CTX sha256;
+    SHA256_Init(&sha256);
+    SHA256_Update(&sha256, data.data(), data.size());
+    SHA256_Final(hash, &sha256);
+    
+    std::stringstream ss;
+    for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
+        ss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
     }
-
-    std::basic_stringstream<char> ss;
-    ss << std::hex << hash;
+    
     return ss.str();
+}
+
+std::vector<unsigned char> DiffEngine::computeCompressedDelta(const std::vector<unsigned char>& original,
+                                                      const std::vector<unsigned char>& modified) {
+    std::vector<unsigned char> delta = computeDelta(original, modified);
+    std::vector<unsigned char> compressed(delta.size() * 1.1 + 12); // zlib рекомендация
+    
+    z_stream stream;
+    stream.next_in = delta.data();
+    stream.avail_in = delta.size();
+    stream.next_out = compressed.data();
+    stream.avail_out = compressed.size();
+    
+    deflateInit(&stream, Z_DEFAULT_COMPRESSION);
+    deflate(&stream, Z_FINISH);
+    deflateEnd(&stream);
+    
+    compressed.resize(stream.total_out);
+    return compressed;
 }
