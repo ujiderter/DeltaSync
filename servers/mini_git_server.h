@@ -4,6 +4,7 @@
 #include "../engines/repository.h"
 #include "file_version.h"
 #include "../engines/diff_engine.h"
+
 #include <boost/asio.hpp>
 #include <cstdint>
 #include <cstring>
@@ -20,23 +21,23 @@
 #include <fstream>
 #include <iostream>
 
-namespace fs = std::filesystem;
-using boost::asio::ip::tcp;
+namespace deltasync {
 
-// Класс для обработки сетевых запросов
 class MiniGitServer {
-private:
-    Repository repo;
-    boost::asio::io_context io_context;
-    tcp::acceptor acceptor;
+public:
+    MiniGitServer(const std::filesystem::path& repoPath, int port);
 
-    // Структура сетевого запроса
-    enum class RequestType {
-        SAVE_FILE,
-        GET_LATEST,
-        GET_VERSION,
-        GET_BRANCHES,
-        GET_HISTORY
+    void run();
+
+    void stop();
+
+private:
+    enum class RequestType : uint32_t {
+        SAVE_FILE,     
+        GET_LATEST,     
+        GET_VERSION,    
+        GET_BRANCHES,   
+        GET_HISTORY    
     };
 
     struct Request {
@@ -50,32 +51,36 @@ private:
     };
 
     struct Response {
-        bool success;
+        bool success = false;
         std::string message;
         std::vector<uint8_t> content;
         std::vector<std::string> branches;
         std::vector<FileVersion> history;
     };
 
-public:
-    MiniGitServer(const std::filesystem::__cxx11::path& repoPath, int port);
+    Repository repo;
+    boost::asio::io_context io_context;
+    boost::asio::ip::tcp::acceptor acceptor;
+    std::atomic<bool> running{true};
+    std::vector<std::thread> worker_threads;
 
-    void run();
-
-private:
     void startAccept();
-    void handleClient(std::shared_ptr<tcp::socket> socket);
 
-    // Вспомогательные функции для чтения/записи данных по сети
-    void readString(tcp::socket& socket, std::string& str);
+    void handleClient(std::shared_ptr<boost::asio::ip::tcp::socket> socket);
 
-    void readBinaryData(tcp::socket& socket, std::vector<uint8_t>& data);
+    Response processRequest(const Request& request);
 
-    void writeString(tcp::socket& socket, const std::string& str);
+    void readString(boost::asio::ip::tcp::socket& socket, std::string& str);
 
-    void writeBinaryData(tcp::socket& socket, const std::vector<uint8_t>& data);
+    void readBinaryData(boost::asio::ip::tcp::socket& socket, std::vector<uint8_t>& data);
 
-    void sendResponse(tcp::socket& socket, const Response& response);
+    void writeString(boost::asio::ip::tcp::socket& socket, const std::string& str);
+
+    void writeBinaryData(boost::asio::ip::tcp::socket& socket, const std::vector<uint8_t>& data);
+
+    void sendResponse(boost::asio::ip::tcp::socket& socket, const Response& response);
 };
 
-#endif //DELTASYNC_MINI_GIT_SERVER_H
+} // namespace deltasync
+
+#endif // DELTASYNC_MINI_GIT_SERVER_H
